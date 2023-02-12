@@ -1,14 +1,7 @@
-import {
-  useState,
-  useRef,
-  useMemo,
-  useEffect,
-  forwardRef,
-  useCallback,
-} from "react";
-import styled from "styled-components";
+import Hls from "hls.js";
 import _ from "lodash-es";
-import video from "/video/video.mp4";
+import styled from "styled-components";
+import { useState, useRef, useEffect, forwardRef } from "react";
 
 import { ReactComponent as PlayPauseSvg } from "@/assets/icons/play/play-pause.svg";
 import { ReactComponent as PlayStartSvg } from "@/assets/icons/play/play-start.svg";
@@ -51,7 +44,31 @@ const Video = styled.video`
   display: block;
 `;
 
+const ScrubberContainer = styled.div<{ passTimePercent: number }>`
+  --scrubber-spot-size: 1.6;
+
+  position: absolute;
+  right: calc(
+    100% - ${({ passTimePercent }) => passTimePercent} * 100% -
+      calc(var(--scrubber-spot-size) * 1rem / 2 - 0.3rem)
+  );
+
+  /* right: calc(
+    100% - var(--progress-position) * 100% -
+      calc(var(--scrubber-spot-size) * 1rem / 2 - 0.3rem)
+  ); */
+  top: 50%;
+  width: var(--scrubber-spot-size) * 1rem;
+  height: 1.6rem;
+  aspect-ratio: 1/1;
+  border: 0;
+  background-color: transparent;
+  transform: translateY(-50%);
+`;
+
 const Timeline = styled.div<{ passTimePercent: number }>`
+  /* --progress-position: ${({ passTimePercent }) => passTimePercent}; */
+
   width: 100%;
   height: 100%;
   transform: scaleY(0.6);
@@ -61,32 +78,54 @@ const Timeline = styled.div<{ passTimePercent: number }>`
   &:after {
     content: "";
     position: absolute;
-    /* width: ${({ passTimePercent }) => passTimePercent}%; */
-    right: calc(100% - var(--progress-position) * 100%);
+    right: calc(100% - ${({ passTimePercent }) => passTimePercent} * 100%);
+    /* right: calc(100% - var(--progress-position) * 100%); */
     height: 100%;
     top: 0;
     left: 0;
     bottom: 0;
     background-color: red;
-    /* transition: width 0.2s; */
   }
 `;
 
-const StyledTimelineContainer = styled.div`
-  position: absolute;
-  bottom: 100%;
-  left: 0;
+const Scrubber = styled.div`
   width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background-color: red;
+  transform: scale(0);
+  transition: transform 0.2s ease-in-out;
+`;
+
+const ScrubberSpot = ({ passTimePercent }: { passTimePercent :number}) => {
+  return (
+    <ScrubberContainer passTimePercent={passTimePercent}>
+      <Scrubber />
+    </ScrubberContainer>
+  );
+};
+
+const StyledTimelineContainer = styled.div<{ isScrubbing: boolean }>`
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  width: 97%;
   height: 0.5rem;
   cursor: pointer;
+  transform: translate(-50%);
+
+  ${Timeline}, ${Scrubber} {
+    transform: ${({ isScrubbing }) => isScrubbing && "scaleY(1)"};
+  }
 
   &:hover {
     ${Timeline} {
       transform: scaleY(1);
+    }
 
-      &:after {
-        transform: scaleY(1);
-      }
+    ${Scrubber} {
+      transform: scale(1);
+      transition: transform 0.2s ease-in-out;
     }
   }
 `;
@@ -151,26 +190,16 @@ const RightPart = styled.div`
   height: 100%;
 `;
 
-const ControlsBar = styled.div`
+const ControlsBarContainer = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
 
   position: absolute;
+  left: 0;
   bottom: 0;
   width: 100%;
   height: 5rem;
-`;
-
-const ControlsContainer = styled.div`
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 9999;
-  /* opacity: 0; */
-  background: rgba(0, 0, 0, 0.2);
 
   &:hover {
     opacity: 1;
@@ -232,10 +261,12 @@ const TimelineSlider = forwardRef(
   (
     {
       passTimePercent,
+      isScrubbing,
       handleMouseUp,
       handleUpdateVideoTime,
     }: {
       passTimePercent: number;
+      isScrubbing: boolean;
       handleMouseUp: () => void;
       handleUpdateVideoTime: (
         e: React.MouseEvent<HTMLDivElement, MouseEvent>
@@ -258,15 +289,18 @@ const TimelineSlider = forwardRef(
     return (
       <StyledTimelineContainer
         ref={timelineRef}
+        isScrubbing={isScrubbing}
         onMouseDown={(e) => handleUpdateVideoTime(e)}
         onMouseUp={() => handleMouseUp()}
       >
         <TimelineCursor></TimelineCursor>
         <Timeline passTimePercent={passTimePercent}></Timeline>
+        <ScrubberSpot passTimePercent={passTimePercent} />
       </StyledTimelineContainer>
     );
   }
 );
+
 const MiniPlayerButton = ({
   isFull,
   handleToggleMiniMode,
@@ -343,6 +377,15 @@ const TheaterButton = ({
   );
 };
 
+const LoadVideoButton = styled.button`
+  margin-top: 1rem;
+  padding: 1.5rem;
+  background-color: #333;
+  color: white;
+  border-radius: 0.4rem;
+  border: 0;
+`;
+
 interface IVideoOptions {
   volume: number;
   isScrubbing: boolean;
@@ -359,13 +402,14 @@ interface IVideoOptions {
 
 function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [videoSource, setVideoSource] = useState<null | string>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
 
   const [videoOptions, setVideoOptions] = useState<IVideoOptions>({
     volume: 0.5,
     isScrubbing: false,
     isTheater: false,
-    isMuted: false,
+    isMuted: true,
     isPlay: false,
     isPlaying: false,
     isMini: false,
@@ -374,6 +418,7 @@ function App() {
     currentTime: 0,
     duration: 0,
   });
+
   const {
     isScrubbing,
     volume,
@@ -387,8 +432,8 @@ function App() {
   } = videoOptions;
 
   const passTimePercent =
-    !duration || !currentTime ? 0 : (currentTime / duration) * 100;
-console.log("object");
+    !duration || !currentTime ? 0 : currentTime / duration;
+
   const handleTogglePlay = () => {
     setVideoOptions((prev) => ({
       ...prev,
@@ -446,7 +491,6 @@ console.log("object");
   const handleUpdateVideoTime = (
     e: React.MouseEvent<HTMLDivElement, MouseEvent>
   ) => {
-    console.log("mouse down");
     const timeline = timelineRef.current;
 
     if (!timeline) return;
@@ -459,6 +503,7 @@ console.log("object");
 
     // percent * duration(video total time) = currentTime
     const setTime = duration * percent;
+    // timeline.style.setProperty("--progress-position", `${percent}`);
 
     setVideoOptions((prev) => ({
       ...prev,
@@ -478,8 +523,6 @@ console.log("object");
   };
 
   const handleMouseUp = () => {
-    console.log("mouseUp");
-
     setVideoOptions((prev) => ({
       ...prev,
       isScrubbing: false,
@@ -493,23 +536,20 @@ console.log("object");
     if (!timeline || !isScrubbing) return;
     const { clientX } = e;
     const { width, x } = timeline.getBoundingClientRect();
-    console.log({ clientX });
     // 不會少於 0，且不會大於 timeline 的寬
     const percent = Math.min(Math.max(0, clientX - x), width) / width;
 
-    console.log({ percent });
-
     // percent * duration(video total time) = currentTime
     const setTime = duration * percent;
-    timeline.style.setProperty("--progress-position", `${percent}`);
+    // timeline.style.setProperty("--progress-position", `${percent}`);
+
     setVideoOptions((prev) => ({
       ...prev,
-      isPlay: false,
       setTime,
     }));
   };
 
-  const throttledHandleMouseMove = _.throttle(handleMouseMove, 60); // Throttle interval is 100ms
+  const throttledHandleMouseMove = _.throttle(handleMouseMove, 60);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -518,7 +558,12 @@ console.log("object");
 
     video.volume = volume;
     video.muted = isMuted;
-    isPlay ? video.play() : video.pause();
+
+    if (isPlay && video.paused) {
+      video.play();
+    } else if (!isPlay && !video.paused) {
+      video.pause();
+    }
 
     if (setTime !== undefined) {
       video.currentTime = setTime;
@@ -530,7 +575,6 @@ console.log("object");
   }, [videoOptions]);
 
   useEffect(() => {
-    console.log("mouse move");
     document.addEventListener("mousemove", throttledHandleMouseMove);
     document.addEventListener("mouseup", handleMouseUp);
 
@@ -540,18 +584,72 @@ console.log("object");
     };
   }, [isScrubbing]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+
+    if (!video || !videoSource) return;
+
+    const playVideo = _.debounce(() => {
+      const hls = new Hls({
+        liveSyncDurationCount: 0,
+        liveMaxLatencyDurationCount: 1,
+      });
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        hls.loadSource(videoSource);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          setVideoOptions((prev) => ({
+            ...prev,
+            isPlaying: true,
+            isPlay: true,
+          }));
+        });
+      });
+
+      hls.on(Hls.Events.ERROR, function (event, data) {
+        var errorType = data.type;
+
+        switch (errorType) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            hls.destroy();
+            playVideo();
+            break;
+          default:
+            break;
+        }
+      });
+    }, 500);
+
+    try {
+      if (Hls.isSupported()) {
+        playVideo();
+      }
+    } catch (err) {
+      console.log("error");
+    }
+
+    return () => {
+      // playVideo.clearTimer();
+      playVideo.cancel();
+    };
+  }, [videoRef, videoSource]);
+
   return (
-    <PlayerContainer isFull={isFull} isTheater={isTheater}>
-      <Video
-        ref={videoRef}
-        src={video}
-        onTimeUpdate={(e) => handleVideoTime(e)}
-        onLoadedMetadata={(e) => handleVideoLoaded(e)}
-      ></Video>
-      <ControlsContainer>
-        <ControlsBar>
+    <>
+      <PlayerContainer className="123" isFull={isFull} isTheater={isTheater}>
+        <Video
+          ref={videoRef}
+          onClick={() => handleTogglePlay()}
+          autoPlay={true}
+          onTimeUpdate={(e) => handleVideoTime(e)}
+          onLoadedMetadata={(e) => handleVideoLoaded(e)}
+        ></Video>
+        <ControlsBarContainer>
           <TimelineSlider
             ref={timelineRef}
+            isScrubbing={isScrubbing}
             handleUpdateVideoTime={handleUpdateVideoTime}
             handleMouseUp={handleMouseUp}
             passTimePercent={passTimePercent}
@@ -589,9 +687,16 @@ console.log("object");
               handleToggleFullMode={handleToggleFullMode}
             />
           </RightPart>
-        </ControlsBar>
-      </ControlsContainer>
-    </PlayerContainer>
+        </ControlsBarContainer>
+      </PlayerContainer>
+      <LoadVideoButton
+        onClick={() => {
+          setVideoSource("video/1/index.m3u8");
+        }}
+      >
+        LOAD VIDEO SOURCE
+      </LoadVideoButton>
+    </>
   );
 }
 
